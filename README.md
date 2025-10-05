@@ -22,5 +22,5 @@ Use **uv** to install dependencies the backend app need:
 
 ```sh
 uv sync
-uv run app.py
+uv run main.py
 ```
