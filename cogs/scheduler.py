@@ -22,7 +22,7 @@ class Scheduler(Forum):
     async def scheduled_post(self):
         now = datetime.now(TAIPEI_TZ)
         
-        # 讀取貼文資料
+        # read posts from JSON file
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 posts = json.load(f)
@@ -32,7 +32,8 @@ class Scheduler(Forum):
         except json.JSONDecodeError:
             print("[Error] data/post.json 檔案格式錯誤。")
             return
-
+        
+        # load posts to list
         posts_to_post = []
         for post in posts:
             post_time_str = post.get("timestamp")
@@ -48,14 +49,21 @@ class Scheduler(Forum):
             if now >= post_time:
                 posts_to_post.append(post)
 
+        # launch post tp forum
         for post in posts_to_post:
             if post.get("posted"):
                 continue
             title = post.get("title", "無標題")
             content = post.get("content", "")
             tags = post.get("tags", [])
-            await self.post_forum(title, content, tags)
-            post["posted"] = True
+
+            try:
+                await self.post_forum(title, content, tags)
+                print(f"[Info] 已發佈貼文: {title}")
+                post["posted"] = True
+            except Exception as e:
+                print(f"[Error] 發佈貼文失敗: {title}, 錯誤: {e}")
+                continue
 
         # Update the JSON file to mark posts as posted
         try:
