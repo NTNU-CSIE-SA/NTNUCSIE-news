@@ -1,5 +1,6 @@
 # NTNUCSIE news
 ![Discord](https://img.shields.io/badge/Discord-7289DA.svg?logo=discord&logoColor=white&style=for-the-badge) ![Python](https://img.shields.io/badge/Python-14354C.svg?logo=python&logoColor=white&style=for-the-badge)  
+  
 This is a Discord bot to repost the news from [NTNU CSIE official website](https://www.csie.ntnu.edu.tw/index.php/news/).  
 
 ## 🖥️ Requirements 
