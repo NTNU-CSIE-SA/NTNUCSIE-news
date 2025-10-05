@@ -1,9 +1,10 @@
 [project]
 name = "ntnucsie-news"
 version = "0.1.0"
-description = "Add your description here"
+description = "This is a bot of NTNU CSIE SA. It can re-post the news on NTNU CSIE website to specific discord server and show these news as forum format."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "discord-py>=2.6.3",
+    "dotenv>=0.9.9",
 ]
