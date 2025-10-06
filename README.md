@@ -13,8 +13,7 @@ Please set a `.env` file for the repo, you can run following instruction and fil
 
 ```sh
 echo 'DISCORD_TOKEN=<your_discord_bot_token>
-TEST_GUILD_ID=<test_guild_id>
-FORUM_CHANNEL_ID=<test_forum_channel_id>' > .env
+TEST_GUILD_ID=<test_guild_id>' > .env
 ```
 
 ### Development
@@ -24,3 +23,4 @@ Use **uv** to install dependencies the backend app need:
 uv sync
 uv run main.py
 ```
+Then you can use instruction `/add_forum <forum channel>` to add the forum which you want to launch posts to forum lists. The program will launch posts on it.
