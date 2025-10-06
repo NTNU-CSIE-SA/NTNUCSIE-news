@@ -5,6 +5,7 @@ import asyncio
 
 from discord.ext import commands
 from dotenv import load_dotenv
+from discord import app_commands
 
 # logging settings
 handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
@@ -28,29 +29,43 @@ async def main_loop():
     async def on_ready():
         print(f'We have logged in as {bot.user}')
         try:
+            # 1) 同步到 Discord 全域指令，可能需要一段時間才會生效
             synced = await bot.tree.sync()
-            await bot.tree.sync(guild=test_guild_obj)
+
+            # # 2) 將全域指令鏡射到測試伺服器，立即可用
+            # bot.tree.copy_global_to(guild=test_guild_obj)
+            # synced = await bot.tree.sync(guild=test_guild_obj)
+
             print(f'Synced {len(synced)} command(s)')
         except Exception as e:
             print(e)
 
-    @bot.tree.command(name="load", description="Load a cog")
-    @commands.is_owner()
+
+    def slash_is_owner():
+        async def predicate(inter: discord.Interaction) -> bool:
+            return await inter.client.is_owner(inter.user)
+        return app_commands.check(predicate)
+
+    @bot.tree.command(name="load", description="[管理員] 載入特定功能模組")
+    @slash_is_owner()
     async def load(interaction: discord.Interaction, cog: str):
         await bot.load_extension(f"cogs.{cog}")
-        await interaction.response.send_message(f"Loaded {cog} cog.")
+        await bot.tree.sync(guild=test_guild_obj)
+        await interaction.response.send_message(f"[Info] 成功載入 \033[1m{cog}\033[0m")
 
-    @bot.tree.command(name="unload", description="Unload a cog")
-    @commands.is_owner()
+    @bot.tree.command(name="unload", description="[管理員] 卸載特定功能模組")
+    @slash_is_owner()
     async def unload(interaction: discord.Interaction, cog: str):
         await bot.unload_extension(f"cogs.{cog}")
-        await interaction.response.send_message(f"Unloaded {cog} cog.")
+        await bot.tree.sync(guild=test_guild_obj)
+        await interaction.response.send_message(f"[Info] 成功卸載 \033[1m{cog}\033[0m")
 
-    @bot.tree.command(name="reload", description="Reload a cog")
-    @commands.is_owner()
+    @bot.tree.command(name="reload", description="[管理員] 重新載入特定功能模組")
+    @slash_is_owner()
     async def reload(interaction: discord.Interaction, cog: str):
         await bot.reload_extension(f"cogs.{cog}")
-        await interaction.response.send_message(f"Reloaded {cog} cog.")
+        await bot.tree.sync(guild=test_guild_obj)
+        await interaction.response.send_message(f"[Info] 成功重新載入 \033[1m{cog}\033[0m")
 
     # Load cogs
     for filename in os.listdir("./cogs"):
@@ -82,4 +97,4 @@ def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
