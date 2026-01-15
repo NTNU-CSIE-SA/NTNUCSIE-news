@@ -1,96 +1,111 @@
-import json
 import asyncio
-
+import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Dict, Any
+
 from discord.ext import commands, tasks
-from cogs.forum import Forum
+import services.news_processer as np
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
-DATA_FILE = "data/post.json"
-CONFIG_FILE = "data/forum_config.json"
 
 class Scheduler(commands.Cog):
-    def __init__(self, bot: commands.Bot, forum_channel_ids: list[int] = None):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.forum_channel_list = forum_channel_ids or []
         self._lock = asyncio.Lock()
 
     async def cog_load(self):
-        if not self.scheduled_post.is_running():
-            self.scheduled_post.start()
+        self.scheduled_post.start()
 
     def cog_unload(self):
         self.scheduled_post.cancel()
 
-    @tasks.loop(minutes=1)
+    def _get_db(self):
+        """腳踏實地的作法：建立連線並開啟 WAL 模式，減少資料庫鎖定問題"""
+        conn = sqlite3.connect("data.db")
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.row_factory = sqlite3.Row # 讓結果可以像 dict 一樣用名稱存取
+        return conn
+
+    @tasks.loop(minutes=15)
     async def scheduled_post(self):
         async with self._lock:
-            now = datetime.now(TAIPEI_TZ)
-            
-            # read posts from JSON file
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    posts = json.load(f)
-            except FileNotFoundError:
-                print("[Error] 找不到 data/post.json 檔案。")
-                return
-            except json.JSONDecodeError:
-                print("[Error] data/post.json 檔案格式錯誤。")
-                return
-            
-            # load posts to list
-            posts_to_post = []
-            for post in posts:
-                post_time_str = post.get("timestamp")
-                if not post_time_str:
-                    continue
-                try:
-                    dt = datetime.fromisoformat(post_time_str.replace("Z", "+00:00"))
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=TAIPEI_TZ)
-                    post_time = dt.astimezone(TAIPEI_TZ)
-                except ValueError:
-                    print(f"[Error] 貼文時間格式錯誤: {post_time_str}")
-                    continue
-                if now >= post_time:
-                    posts_to_post.append(post)
+            # 1. 更新新聞
+            print("[Info] Scraping and updating news...")
+            await asyncio.to_thread(np.update_news)
 
-            forum_cog: Forum = self.bot.get_cog("Forum")
-            if not forum_cog:
-                print("[Error] 找不到 Forum cog，無法發佈貼文。")
-                return
+            # 2. 獲取待處理任務
+            with self._get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        r.forum_channel_id, 
+                        r.post_id, 
+                        p.title, 
+                        p.url, 
+                        p.content, 
+                        p.timestamp, 
+                        f.dc_thread_id
+                    FROM repost r
+                    JOIN posted_news p ON r.post_id = p.post_id
+                    LEFT JOIN forum_posted f ON r.forum_channel_id = f.forum_channel_id AND r.post_id = f.post_id
+                    WHERE p.timestamp <= datetime('now')
+                """)
+                tasks_rows = cursor.fetchall()
+                if not tasks_rows: return
 
-            # launch post tp forum
-            for post in posts_to_post:
-                title = post.get("title", "無標題")
-                content = post.get("content", "")
-                tags = post.get("tags", [])
-                posted_list = post.get("posted", [])
+                forum_cog = self.bot.get_cog("Forum")
+                if not forum_cog: return
 
-                try:
-                    posted_list = await forum_cog.post_forum(title, content, tags, posted_list)
-                    print(f"[Info] 已發佈貼文: {title}")
-                except Exception as e:
-                    print(f"[Error] 發佈貼文失敗: {title}, 錯誤: {e}")
-                    continue
+                # 3. 預載入所有貼文的附加資訊 (簡化查詢邏輯)
+                posts_info = self._get_posts_additional_info(cursor, {row['post_id'] for row in tasks_rows})
 
-                post["posted"] = posted_list
+                # 4. 執行發佈
+                for row in tasks_rows:
+                    p_id = row['post_id']
+                    f_id = row['forum_channel_id']
+                    info = posts_info.get(p_id, {})
 
-            # Update the JSON file to mark posts as posted
-            try:
-                with open(DATA_FILE, "w", encoding="utf-8") as f:
-                    json.dump(posts, f, ensure_ascii=False, indent=4)
-            except Exception as e:
-                print(f"[Error] 無法儲存貼文資料: {e}")
-    
+                    post_data = {
+                        "url": row['url'],
+                        "title": row['title'],
+                        "content": row['content'],
+                        "timestamp": datetime.fromisoformat(row['timestamp']).replace(tzinfo=TAIPEI_TZ) if row['timestamp'] else None,
+                        "tags": info.get("tags", []),
+                        "images_url": info.get("image_urls", []),
+                        "files_url": info.get("file_urls", [])
+                    }
+
+                    try:
+                        if row['dc_thread_id'] is None:
+                            # 建立新貼文
+                            new_dc_id = await forum_cog.create_post(f_id, post_data)
+                            if new_dc_id:
+                                cursor.execute("INSERT OR REPLACE INTO forum_posted (forum_channel_id, post_id, dc_thread_id) VALUES (?, ?, ?)",
+                                               (f_id, p_id, str(new_dc_id)))
+                        else:
+                            # TODO: Handle updates (update_post)
+                            pass
+
+                        # 成功後刪除任務並提交
+                        cursor.execute("DELETE FROM repost WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
+                        conn.commit()
+                    except Exception as e:
+                        print(f"[Error] Failed to process post {p_id} to channel {f_id}: {e}")
+
+    def _get_posts_additional_info(self, cursor, post_ids: set) -> Dict[int, Any]:
+        """封裝輔助查詢，讓主邏輯更乾淨"""
+        info = {}
+        for p_id in post_ids:
+            tags = [r[0] for r in cursor.execute("SELECT t.tag_name FROM tags t JOIN post_tags pt ON t.tag_id = pt.tag_id WHERE pt.post_id = ?", (p_id,)).fetchall()]
+            imgs = [r[0] for r in cursor.execute("SELECT image_url FROM images WHERE post_id = ?", (p_id,)).fetchall()]
+            files = [r[0] for r in cursor.execute("SELECT file_url FROM files WHERE post_id = ?", (p_id,)).fetchall()]
+            info[p_id] = {"tags": tags, "image_urls": imgs, "file_urls": files}
+        return info
+
     @scheduled_post.before_loop
     async def _before(self):
         await self.bot.wait_until_ready()
 
 async def setup(bot: commands.Bot):
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        config = json.load(f)
-    forum_id = config.get("registered_forum", [])
-    
-    await bot.add_cog(Scheduler(bot, forum_id))
+    await bot.add_cog(Scheduler(bot))

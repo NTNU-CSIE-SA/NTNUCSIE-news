@@ -6,7 +6,6 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-JSON_PATH = "data/posts.json"
 BASE_URL = "https://www.csie.ntnu.edu.tw"
 WP_API_BASE = "https://www.csie.ntnu.edu.tw/index.php/wp-json/wp/v2"
 
@@ -37,19 +36,28 @@ def ensure_parent_dir(path: str) -> None:
         os.makedirs(parent, exist_ok=True)
 
 
-def load_db(path: str) -> List[Dict[str, Any]]:
-    if not os.path.exists(path):
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+# def load_db(path: str) -> List[Dict[str, Any]]:
+#     if not os.path.exists(path):
+#         return []
+
+#     if os.path.getsize(path) == 0:
+#         print(f"WARN: {path} 是空檔案，將重新建立。")
+#         return []
+
+#     with open(path, "r", encoding="utf-8") as f:
+#         try:
+#             return json.load(f)
+#         except json.JSONDecodeError as exc:
+#             print(f"WARN: 讀取 {path} 失敗（{exc}），將重新建立。")
+#             return []
 
 
-def save_db(path: str, data: List[Dict[str, Any]]) -> None:
-    ensure_parent_dir(path)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+# def save_db(path: str, data: List[Dict[str, Any]]) -> None:
+#     ensure_parent_dir(path)
+#     tmp = path + ".tmp"
+#     with open(tmp, "w", encoding="utf-8") as f:
+#         json.dump(data, f, ensure_ascii=False, indent=2)
+#     os.replace(tmp, path)
 
 def unique_keep_order(items: List[str]) -> List[str]:
     seen = set()
@@ -131,7 +139,7 @@ def upsert(db: List[Dict[str, Any]], item: Dict[str, Any]) -> List[Dict[str, Any
     return db
 
 def main():
-    db = load_db(JSON_PATH)
+    # db = load_db(JSON_PATH)
 
     cat_name_cache: Dict[int, str] = {}
 
@@ -139,7 +147,7 @@ def main():
     for url in CATEGORY_URLS:
         cat_id = get_category_id_from_header(url)
         if cat_id is None:
-            print(f"[SKIP] not a category page (cannot parse category id): {url}")
+            print(f"[Skip] not a category page (cannot parse category id): {url}")
             continue
         name = get_category_name(cat_id, cat_name_cache)
         print(f"[OK] {name} (id={cat_id}) <- {url}")
@@ -148,10 +156,10 @@ def main():
     cat_ids = list(dict.fromkeys(cat_ids))
 
     if not cat_ids:
-        print("WARN: 沒有任何有效分類（全部解析不到 category id）。")
+        print("[WARN] 沒有任何有效分類（全部解析不到 category id）。")
         return
 
-    all_items: List[Dict[str, Any]] = []
+    all_items_map: Dict[str, Dict[str, Any]] = {}
 
     for cat_id in cat_ids:
         cat_name = get_category_name(cat_id, cat_name_cache)
@@ -178,37 +186,39 @@ def main():
                 tags.append(get_category_name(int(cid), cat_name_cache))
             tags = unique_keep_order(tags)
 
-            images = []
+            files = []
             embedded = p.get("_embedded", {})
             fm = embedded.get("wp:featuredmedia")
             if isinstance(fm, list) and fm:
                 src = fm[0].get("source_url")
                 if src:
-                    images.append(urljoin(BASE_URL, src.strip()))
-            images.extend(extract_img_urls_from_html(content_html))
-            images = unique_keep_order(images)
+                    files.append(urljoin(BASE_URL, src.strip()))
+            files.extend(extract_img_urls_from_html(content_html))
+            files = unique_keep_order(files)
 
-            all_items.append({
+            images = []
+            for f in files:
+                if re.search(r"\.(jpg|jpeg|png|gif|bmp|webp)(\?|$)", f, re.IGNORECASE):
+                    images.append(f)
+                    files.remove(f)
+
+            all_items_map[post_id] = {
                 "id": post_id,     
                 "url": url,
                 "title": title,
                 "tags": tags,
                 "content": content,
                 "images": images,
+                "files": files,
                 "timestamp": timestamp,
                 "posted": [],      
-            })
+            }
 
-    if not all_items:
-        print("WARN: 有分類，但抓不到任何貼文。")
+    if not all_items_map:
+        print("[Warning] 有分類，但抓不到任何貼文。")
         return
 
-    for item in all_items:
-        db = upsert(db, item)
-
-    db.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
-    save_db(JSON_PATH, db)
-    print(f"Saved {len(db)} posts -> {JSON_PATH}")
+    return list(all_items_map.values())
 
 
 if __name__ == "__main__":

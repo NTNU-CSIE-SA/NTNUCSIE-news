@@ -3,6 +3,8 @@ import logging
 import discord
 import asyncio
 
+import utils.db_util as db
+
 from discord.ext import commands
 from dotenv import load_dotenv
 from discord import app_commands
@@ -90,6 +92,9 @@ async def main_loop():
             break
 
 def main():
+    # Initialize database
+    db.init_db()
+    
     try:
         asyncio.run(main_loop())
     except KeyboardInterrupt:

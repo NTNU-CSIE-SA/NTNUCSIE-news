@@ -1,100 +1,205 @@
 import discord
 import json
+import sqlite3
+import aiohttp
+import io
+import re
+import asyncio
+
+import utils.db_util as db
 
 from discord.ext import commands
 from discord import app_commands
 
-CONFIG_FILE = "data/forum_config.json"
-
 class Forum(commands.Cog):
     def __init__(self, bot: commands.Bot, forum_channel_ids: list[int] = None):
         self.bot = bot
-        self.forum_channel_list = forum_channel_ids or []
+        self.db_lock = asyncio.Lock()
+    
+    async def _smart_download(self, session, url, max_mb):
+        """智慧下載：檢查大小，太大的回傳 URL 字串，小的回傳 discord.File"""
+        try:
+            async with session.head(url, timeout=5, allow_redirects=True) as resp:
+                size_bytes = int(resp.headers.get('Content-Length', 0))
+                if size_bytes > max_mb * 1024 * 1024:
+                    return url
+            
+            async with session.get(url, timeout=15) as resp:
+                if resp.status == 200:
+                    data = io.BytesIO(await resp.read())
 
-    # async def _get_forum(self) -> discord.ForumChannel:
-    #     ch = self.bot.get_channel(self.forum_channel_id) or await self.bot.fetch_channel(self.forum_channel_id)
-    #     if not isinstance(ch, discord.ForumChannel):
-    #         raise RuntimeError(f"Channel {self.forum_channel_id} 不是 ForumChannel。")
-    #     return ch
-
-    async def get_forum_list(self) -> list[discord.ForumChannel]:
-        forum_list = []
-        for forum_id in self.forum_channel_list:
-            ch = self.bot.get_channel(forum_id) or await self.bot.fetch_channel(forum_id)
-            if not isinstance(ch, discord.ForumChannel):
-                print(f"[Error] Channel {forum_id} 不是 ForumChannel。")
-                continue
-            forum_list.append(ch)
-        return forum_list
-
-    async def post_forum(
+                    filename = url.split("/")[-1].split("?")[0] or "attachment"
+                    filename = re.sub(r'[\\/*?:"<>|]', "", filename)
+                    return discord.File(data, filename=filename)
+        except Exception:
+            pass
+        return url
+    
+    async def create_posts(
         self,
-        title: str,
-        content: str,
-        tags: list[int] = None,
-        posted_list: list[int] = None
-    ) -> list[int]:
-        forum_list = await self.get_forum_list()
-
-        if not forum_list:
-            print("[Error] 沒有可用的 ForumChannel。")
-            return
+        forum_id: int,
+        post: dict,
+        max_upload_size_mb: int = 24,
+    ):
+        # 1) Get forum channel
+        forum = self.bot.get_channel(forum_id)
+        if not isinstance(forum, discord.ForumChannel):
+            print(f"[Error] 頻道 ID {forum_id} 不是有效的 ForumChannel。")
+            return None
         
-        for forum in forum_list:
-            if forum.id in (posted_list or []):
-                print(f"[Info] 貼文已在 {forum.name} 發佈過，跳過。")
-                continue
+        # 2) Fetch data
+        url = post.get("url", "")
+        title = post.get("title", "無標題")
+        content = post.get("content", "")
+        timestamp_obj = post.get("timestamp") # 假設傳入的是 datetime 物件
+        tags = post.get("tags", [])
+        image_urls = post.get("images_url", [])
+        file_urls = post.get("files_url", [])
 
-            # tags
-            applied_tags = []
-            if tags:
-                for tag_id in tags:
-                    tag = discord.utils.get(forum.available_tags, id=tag_id)
-                    if tag:
-                        applied_tags.append(tag)
+        # 3) Download files and images
+        upload_files = []
+        large_file_links = []
+        async with aiohttp.ClientSession() as session:
+            for u in (image_urls[:10] + file_urls):
+                file_obj = await self._smart_download(session, u, max_upload_size_mb)
+                if isinstance(file_obj, discord.File):
+                    if len(upload_files) < 10:
+                        upload_files.append(file_obj)
+                    else:
+                        large_file_links.append(u)
+                elif isinstance(file_obj, str):
+                    large_file_links.append(file_obj)
+        
+        # 4) New Content
+        # Discord Timestamp: <t:秒數:F>
+        discord_ts = ""
+        if hasattr(timestamp_obj, 'timestamp'):
+            discord_ts = f"<t:{int(timestamp_obj.timestamp())}:F>"
+        else:
+            discord_ts = str(timestamp_obj)
 
-            # 建立論壇「貼文」＝在該 ForumChannel 建立 thread，並送出首則訊息
-            thread, first_message = await forum.create_thread(
-                name=title,
-                content=content,
+        new_content = (
+            f"{content[:1800]}\n\n"
+            f"{'='*30}\n"
+            f"📌 原文連結：{url}\n📅 發文時間：{discord_ts}"
+        )
+        if large_file_links:
+            new_content += "\n📂 附加檔案連結：\n" + "\n".join([f"- {l}" for l in large_file_links])
+
+        # 5) tags
+        applied_tags = []
+        for tag_id in tags:
+            tag = discord.utils.get(forum.available_tags, name=tag_id) 
+            if tag: 
+                applied_tags.append(tag)
+
+        # 6) Post thread
+        try:
+            result = await forum.create_thread(
+                name=title[:100], 
+                content=new_content[:2000],
                 applied_tags=applied_tags,
+                files=upload_files,
                 reason="自動發文"
             )
 
-            posted_list.append(forum.id)
-
-            print(f"已在 {forum.name} 建立新貼文: {thread.name} (ID: {thread.id})")
-
-        return posted_list
+            print(f"已在 {forum.name} 建立新貼文: {result.thread.name} (ID: {result.thread.id})")
+            return result.thread.id 
+        except Exception as e:
+            print(f"[Error] 在 {forum.name} 發佈貼文失敗: {e}")
+            return None
     
     def is_owner():
         async def predicate(inter: discord.Interaction):
             return await inter.client.is_owner(inter.user)
         return app_commands.check(predicate)
 
-    @app_commands.command(name = "add_forum", description = "新增發佈新聞用的論壇頻道")
-    @commands.is_owner()
-    @app_commands.describe(forum_channel = "論壇頻道")
-    async def add_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
-        '''
-        新增發佈新聞用的論壇頻道，請確定該頻道為 ForumChannel。
-        目前支援多個論壇頻道，發佈時會自動跳過已發佈過的頻道。
-        '''
-        if forum_channel.id in self.forum_channel_list:
-            await interaction.response.send_message(f"頻道 {forum_channel.name} 已在發佈清單中。", ephemeral=True)
-            return
+    # @app_commands.command(name = "add_forum", description = "新增發佈新聞用的論壇頻道")
+    # @commands.is_owner()
+    # @app_commands.describe(forum_channel = "論壇頻道")
+    # async def add_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
+    #     '''
+    #     新增發佈新聞用的論壇頻道，請確定該頻道為 ForumChannel。
+    #     目前支援多個論壇頻道，發佈時會自動跳過已發佈過的頻道。
+    #     '''
+    #     # 1) Check channel type
+    #     if not isinstance(forum_channel, discord.ForumChannel):
+    #         await interaction.response.send_message(f"頻道 {forum_channel.name} 不是論壇頻道 (ForumChannel)。", ephemeral=True)
+    #         return
+        
+    #     # 2) Check already in database table
+    #     conn = sqlite3.connect("data.db")
 
-        self.forum_channel_list.append(forum_channel.id)
+    #     cursor = conn.cursor()
 
-        # save to config file
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump({"registered_forum": self.forum_channel_list}, f, ensure_ascii=False, indent=4)
+    #     cursor.execute("SELECT 1 FROM registered_forum WHERE channel_id = ?", (forum_channel.id,))
+
+    #     if cursor.fetchone() is not None:
+    #         await interaction.response.send_message(f"頻道 {forum_channel.name} 已在發佈清單中。", ephemeral=True)
+    #         conn.close()
+    #         return
+        
+    #     # 3) Insert to database
+    #     cursor.execute("INSERT INTO registered_forum (channel_id) VALUES (?)", (forum_channel.id,))
+        
+    #     conn.commit()
+    #     conn.close()
+
+    #     # 4) Update repost table for existing posts
+    #     conn = sqlite3.connect("data.db")
+    #     cursor = conn.cursor()
+    #     cursor.execute("""
+    #         INSERT OR IGNORE INTO repost (forum_channel_id, post_id)
+    #         SELECT ?, post_id FROM posted_news
+    #     """, (forum_channel.id,))
+    #     conn.commit()
+    #     conn.close()
     
-        await interaction.response.send_message(f"已新增頻道 {forum_channel.name} 至發佈清單。", ephemeral=True)
+    #     await interaction.response.send_message(f"已新增頻道 {forum_channel.name} 至發佈清單。", ephemeral=True)
+
+    @app_commands.command(name="add_forum", description="新增發佈新聞用的論壇頻道")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def add_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
+        # 1. 預先回應 (Defer)，解決「未知整合」與 3 秒超時問題
+        await interaction.response.defer(ephemeral=True)
+
+        # 2. 檢查頻道型別
+        if not isinstance(forum_channel, discord.ForumChannel):
+            return await interaction.followup.send(f"頻道 {forum_channel.name} 不是論壇頻道。")
+
+        # 3. 使用非同步鎖定，確保資料庫寫入不衝突
+        async with self.bot.get_cog("Scheduler")._lock: # 建議與 Scheduler 共用同一個鎖
+            try:
+                # 腳踏實地的作法：使用 context manager (with) 管理連線
+                with sqlite3.connect("data.db") as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;") # 開啟 WAL 模式提升併發效能
+                    cursor = conn.cursor()
+
+                    # 檢查是否重複註冊
+                    cursor.execute("SELECT 1 FROM registered_forum WHERE channel_id = ?", (forum_channel.id,))
+                    if cursor.fetchone():
+                        return await interaction.followup.send(f"頻道 {forum_channel.name} 已在清單中。")
+
+                    # 執行寫入動作 (包裹在同一個 Transaction 中)
+                    cursor.execute("INSERT INTO registered_forum (channel_id) VALUES (?)", (forum_channel.id,))
+                    
+                    # 同步現有貼文到任務表
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO repost (forum_channel_id, post_id)
+                        SELECT ?, post_id FROM posted_news
+                    """, (forum_channel.id,))
+                    
+                    conn.commit()
+                
+                # 4. 更新記憶體清單 (如果有維護的話)
+                if hasattr(self, "forum_channel_list"):
+                    self.forum_channel_list.append(forum_channel.id)
+
+                await interaction.followup.send(f"已新增頻道 {forum_channel.name} 至發佈清單。")
+                
+            except Exception as e:
+                print(f"[Error] add_forum 失敗: {e}")
+                await interaction.followup.send(f"執行過程發生錯誤：{e}")
 
 async def setup(bot: commands.Bot):
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        config = json.load(f)
-    forum_id = config.get("registered_forum", [])
-
-    await bot.add_cog(Forum(bot, forum_id))
+    await bot.add_cog(Forum(bot))
