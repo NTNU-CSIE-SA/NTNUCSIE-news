@@ -115,49 +115,6 @@ class Forum(commands.Cog):
             return await inter.client.is_owner(inter.user)
         return app_commands.check(predicate)
 
-    # @app_commands.command(name = "add_forum", description = "新增發佈新聞用的論壇頻道")
-    # @commands.is_owner()
-    # @app_commands.describe(forum_channel = "論壇頻道")
-    # async def add_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
-    #     '''
-    #     新增發佈新聞用的論壇頻道，請確定該頻道為 ForumChannel。
-    #     目前支援多個論壇頻道，發佈時會自動跳過已發佈過的頻道。
-    #     '''
-    #     # 1) Check channel type
-    #     if not isinstance(forum_channel, discord.ForumChannel):
-    #         await interaction.response.send_message(f"頻道 {forum_channel.name} 不是論壇頻道 (ForumChannel)。", ephemeral=True)
-    #         return
-        
-    #     # 2) Check already in database table
-    #     conn = sqlite3.connect("data.db")
-
-    #     cursor = conn.cursor()
-
-    #     cursor.execute("SELECT 1 FROM registered_forum WHERE channel_id = ?", (forum_channel.id,))
-
-    #     if cursor.fetchone() is not None:
-    #         await interaction.response.send_message(f"頻道 {forum_channel.name} 已在發佈清單中。", ephemeral=True)
-    #         conn.close()
-    #         return
-        
-    #     # 3) Insert to database
-    #     cursor.execute("INSERT INTO registered_forum (channel_id) VALUES (?)", (forum_channel.id,))
-        
-    #     conn.commit()
-    #     conn.close()
-
-    #     # 4) Update repost table for existing posts
-    #     conn = sqlite3.connect("data.db")
-    #     cursor = conn.cursor()
-    #     cursor.execute("""
-    #         INSERT OR IGNORE INTO repost (forum_channel_id, post_id)
-    #         SELECT ?, post_id FROM posted_news
-    #     """, (forum_channel.id,))
-    #     conn.commit()
-    #     conn.close()
-    
-    #     await interaction.response.send_message(f"已新增頻道 {forum_channel.name} 至發佈清單。", ephemeral=True)
-
     @app_commands.command(name="add_forum", description="新增發佈新聞用的論壇頻道")
     @app_commands.checks.has_permissions(administrator=True) # 建議改用管理員權限檢查
     async def add_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
@@ -199,12 +156,39 @@ class Forum(commands.Cog):
                 self.forum_channel_list.append(forum_channel.id)
 
             # 5. 處理完成後，使用 followup 發送正式成功訊息
+            log.info(f"新增論壇頻道 {forum_channel.name} (ID: {forum_channel.id}) 並同步現有貼文任務。")
             await interaction.followup.send(f"已成功新增頻道 **{forum_channel.name}** 並同步現有貼文任務。")
 
         except Exception as e:
             log.error(f"add_forum 失敗: {e}")
             # 出錯也要告訴使用者
             await interaction.followup.send(f"新增過程中發生錯誤: {e}")
+
+    @app_commands.command(name="remove_forum", description="移除發佈新聞用的論壇頻道")
+    @app_commands.checks.has_permissions(administrator=True) # 建議改用管理員權限檢查
+    async def remove_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            scheduler_cog = self.bot.get_cog("Scheduler")
+            async with scheduler_cog._lock:
+                with sqlite3.connect("data.db") as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    cursor = conn.cursor()
+
+                    cursor.execute("DELETE FROM registered_forum WHERE channel_id = ?", (forum_channel.id,))
+                    cursor.execute("DELETE FROM repost WHERE forum_channel_id = ?", (forum_channel.id,))
+                    conn.commit()
+
+            if hasattr(self, "forum_channel_list"):
+                self.forum_channel_list.remove(forum_channel.id)
+
+            log.info(f"移除論壇頻道 {forum_channel.name} (ID: {forum_channel.id})。")
+            await interaction.followup.send(f"已成功移除頻道 **{forum_channel.name}**。")
+
+        except Exception as e:
+            log.error(f"remove_forum 失敗: {e}")
+            await interaction.followup.send(f"移除過程中發生錯誤: {e}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Forum(bot))

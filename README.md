@@ -21,6 +21,6 @@ Use **uv** to install dependencies the backend app need:
 
 ```sh
 uv sync
-uv run main.py
+uv run bot.py
 ```
 Then you can use instruction `/add_forum <forum channel>` to add the forum which you want to launch posts to forum lists. The program will launch posts on it.

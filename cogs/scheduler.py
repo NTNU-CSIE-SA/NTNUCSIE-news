@@ -30,7 +30,7 @@ class Scheduler(commands.Cog):
         conn.row_factory = sqlite3.Row
         return conn
 
-    @tasks.loop(minutes=3)
+    @tasks.loop(minutes=30)
     async def scheduled_post(self):
         async with self._lock:
             # 1. 更新新聞
@@ -54,6 +54,7 @@ class Scheduler(commands.Cog):
                     JOIN posted_news p ON r.post_id = p.post_id
                     LEFT JOIN forum_posted f ON r.forum_channel_id = f.forum_channel_id AND r.post_id = f.post_id
                     WHERE p.timestamp <= datetime('now')
+                    LIMIT 50
                 """)
                 tasks_rows = cursor.fetchall()
                 if not tasks_rows: 
@@ -100,10 +101,15 @@ class Scheduler(commands.Cog):
                         cursor.execute("DELETE FROM repost WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
                         conn.commit()
                         ok += 1
+
+
                     except Exception as e:
                         log.error(f"Failed to post to forum channel {f_id} for post {p_id}: {e}")
                 
                 log.info(f"Repost task processing completed: {ok}/{len(tasks_rows)} succeeded.")
+                
+                # avoid time limit exceed
+                await asyncio.sleep(10)
 
     def _get_posts_additional_info(self, cursor, post_ids: set) -> Dict[int, Any]:
         """封裝輔助查詢，讓主邏輯更乾淨"""
