@@ -161,10 +161,19 @@ def main():
             if date_gmt:
                 timestamp = date_gmt if date_gmt.endswith("Z") else (date_gmt + "Z")
 
-            tags = []
+            # Tags
+            raw_tags = []
             for cid in p.get("categories", []):
-                tags.append(get_category_name(int(cid), cat_name_cache))
-            tags = unique_keep_order(tags)
+                name = get_category_name(int(cid), cat_name_cache)
+                if name:
+                    raw_tags.append(name.strip())
+
+            ## Remove undesired tags
+            EXCLUDED_TAGS = {"最新消息", "Uncategorized", "未分類"}
+            filtered_tags = [t for t in raw_tags if t not in EXCLUDED_TAGS]
+
+            ## Keep unique and order
+            tags = unique_keep_order(filtered_tags)
 
             files = []
             embedded = p.get("_embedded", {})

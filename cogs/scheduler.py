@@ -1,12 +1,19 @@
 import asyncio
 import sqlite3
 import logging
+import os
+
+import services.news_processer as np
+
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Any
-
 from discord.ext import commands, tasks
-import services.news_processer as np
+from dotenv import load_dotenv
+
+# env
+load_dotenv()
+UPDATE_MINUTES = int(os.getenv("UPDATE_MINUTES", "30"))
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +37,7 @@ class Scheduler(commands.Cog):
         conn.row_factory = sqlite3.Row
         return conn
 
-    @tasks.loop(minutes=30)
+    @tasks.loop(minutes=UPDATE_MINUTES)
     async def scheduled_post(self):
         async with self._lock:
             # 1. 更新新聞
@@ -72,8 +79,18 @@ class Scheduler(commands.Cog):
                 # 4. 執行發佈
                 ok = 0
                 for row in tasks_rows:
-                    p_id = row['post_id']
                     f_id = row['forum_channel_id']
+                    forum = self.bot.get_channel(f_id)
+
+                    if forum is None:
+                        log.warning(f"偵測到失效頻道 ID {f_id}，自動從資料庫移除。")
+                        cursor.execute("DELETE FROM registered_forum WHERE channel_id = ?", (f_id,))
+                        cursor.execute("DELETE FROM repost WHERE forum_channel_id = ?", (f_id,))
+                        cursor.execute("DELETE FROM forum_posted WHERE forum_channel_id = ?", (f_id,))
+                        conn.commit()
+                        continue
+
+                    p_id = row['post_id']
                     info = posts_info.get(p_id, {})
 
                     post_data = {
@@ -105,11 +122,11 @@ class Scheduler(commands.Cog):
 
                     except Exception as e:
                         log.error(f"Failed to post to forum channel {f_id} for post {p_id}: {e}")
+                    
+                    # time limit
+                    await asyncio.sleep(10)
                 
                 log.info(f"Repost task processing completed: {ok}/{len(tasks_rows)} succeeded.")
-                
-                # avoid time limit exceed
-                await asyncio.sleep(10)
 
     def _get_posts_additional_info(self, cursor, post_ids: set) -> Dict[int, Any]:
         """封裝輔助查詢，讓主邏輯更乾淨"""

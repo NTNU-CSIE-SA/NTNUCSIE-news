@@ -117,6 +117,7 @@ class Forum(commands.Cog):
             log.error(f"在 {forum.name} 發佈貼文失敗: {e}")
             return None
     
+    # TODO: Update post method
     def is_owner():
         async def predicate(inter: discord.Interaction):
             return await inter.client.is_owner(inter.user)
@@ -150,11 +151,15 @@ class Forum(commands.Cog):
                     # 插入頻道
                     cursor.execute("INSERT INTO registered_forum (channel_id) VALUES (?)", (forum_channel.id,))
                     
-                    # 同步現有貼文 (這就是原本會超時的重活)
+                    # 同步現有貼文
                     cursor.execute("""
                         INSERT OR IGNORE INTO repost (forum_channel_id, post_id)
                         SELECT ?, post_id FROM posted_news
-                    """, (forum_channel.id,))
+                        WHERE post_id NOT IN (
+                            SELECT post_id FROM forum_posted 
+                            WHERE forum_channel_id = ?
+                        )
+                    """, (forum_channel.id, forum_channel.id))
                     
                     conn.commit()
 
@@ -196,6 +201,31 @@ class Forum(commands.Cog):
         except Exception as e:
             log.error(f"remove_forum 失敗: {e}")
             await interaction.followup.send(f"移除過程中發生錯誤: {e}")
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
+        if not isinstance(channel, discord.ForumChannel):
+            return
+        
+        log.info(f"偵測到論壇頻道被刪除：{channel.name} (ID: {channel.id})，自動從資料庫移除。")
+
+        try:
+            scheduler_cog = self.bot.get_cog("Scheduler")
+            async with scheduler_cog._lock:
+                with sqlite3.connect("data.db") as conn:
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    cursor = conn.cursor()
+
+                    cursor.execute("DELETE FROM registered_forum WHERE channel_id = ?", (channel.id,))
+                    cursor.execute("DELETE FROM repost WHERE forum_channel_id = ?", (channel.id,))
+                    cursor.execute("DELETE FROM forum_posted WHERE forum_channel_id = ?", (channel.id,))
+                    conn.commit()
+
+            if hasattr(self, "forum_channel_list"):
+                self.forum_channel_list.remove(channel.id)
+        except Exception as e:
+            log.error(f"自動移除刪除的論壇頻道失敗: {e}")
+    
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Forum(bot))
