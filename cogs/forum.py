@@ -93,6 +93,13 @@ class Forum(commands.Cog):
             tag = discord.utils.get(forum.available_tags, name=tag_id) 
             if tag: 
                 applied_tags.append(tag)
+            else:
+                if len(forum.available_tags) + len(applied_tags) < 20:
+                    try:
+                        new_tag = await forum.create_tag(name=tag_id, moderated=False)
+                        applied_tags.append(new_tag)
+                    except Exception as e:
+                        log.error(f"無法建立新標籤 '{tag_id}'：{e}")
 
         # 6) Post thread
         try:
