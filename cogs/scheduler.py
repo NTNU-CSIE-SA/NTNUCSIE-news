@@ -1,11 +1,14 @@
 import asyncio
 import sqlite3
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Any
 
 from discord.ext import commands, tasks
 import services.news_processer as np
+
+log = logging.getLogger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
@@ -21,18 +24,19 @@ class Scheduler(commands.Cog):
         self.scheduled_post.cancel()
 
     def _get_db(self):
-        """腳踏實地的作法：建立連線並開啟 WAL 模式，減少資料庫鎖定問題"""
-        conn = sqlite3.connect("data.db")
+        conn = sqlite3.connect("data.db", timeout=3)  # 3 秒拿不到鎖就噴錯，不要無限等
         conn.execute("PRAGMA journal_mode=WAL;")
-        conn.row_factory = sqlite3.Row # 讓結果可以像 dict 一樣用名稱存取
+        conn.execute("PRAGMA busy_timeout=3000;")     # 3 秒
+        conn.row_factory = sqlite3.Row
         return conn
 
-    @tasks.loop(minutes=15)
+    @tasks.loop(minutes=3)
     async def scheduled_post(self):
         async with self._lock:
             # 1. 更新新聞
-            print("[Info] Scraping and updating news...")
+            log.info("Updating news database...")
             await asyncio.to_thread(np.update_news)
+            log.info("News database updated.")
 
             # 2. 獲取待處理任務
             with self._get_db() as conn:
@@ -52,15 +56,20 @@ class Scheduler(commands.Cog):
                     WHERE p.timestamp <= datetime('now')
                 """)
                 tasks_rows = cursor.fetchall()
-                if not tasks_rows: return
+                if not tasks_rows: 
+                    log.info("No pending repost tasks found.")
+                    return
 
                 forum_cog = self.bot.get_cog("Forum")
-                if not forum_cog: return
+                log.info(f"Found {len(tasks_rows)} repost tasks to process.")
+                if not forum_cog: 
+                    return
 
                 # 3. 預載入所有貼文的附加資訊 (簡化查詢邏輯)
                 posts_info = self._get_posts_additional_info(cursor, {row['post_id'] for row in tasks_rows})
 
                 # 4. 執行發佈
+                ok = 0
                 for row in tasks_rows:
                     p_id = row['post_id']
                     f_id = row['forum_channel_id']
@@ -90,8 +99,11 @@ class Scheduler(commands.Cog):
                         # 成功後刪除任務並提交
                         cursor.execute("DELETE FROM repost WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
                         conn.commit()
+                        ok += 1
                     except Exception as e:
-                        print(f"[Error] Failed to process post {p_id} to channel {f_id}: {e}")
+                        log.error(f"Failed to post to forum channel {f_id} for post {p_id}: {e}")
+                
+                log.info(f"Repost task processing completed: {ok}/{len(tasks_rows)} succeeded.")
 
     def _get_posts_additional_info(self, cursor, post_ids: set) -> Dict[int, Any]:
         """封裝輔助查詢，讓主邏輯更乾淨"""

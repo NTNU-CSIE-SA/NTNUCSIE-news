@@ -1,16 +1,16 @@
 import discord
-import json
 import sqlite3
 import aiohttp
 import io
 import re
 import asyncio
+import logging
 
-import utils.db_util as db
 
 from discord.ext import commands
 from discord import app_commands
 
+log = logging.getLogger(__name__)
 class Forum(commands.Cog):
     def __init__(self, bot: commands.Bot, forum_channel_ids: list[int] = None):
         self.bot = bot
@@ -35,7 +35,7 @@ class Forum(commands.Cog):
             pass
         return url
     
-    async def create_posts(
+    async def create_post(
         self,
         forum_id: int,
         post: dict,
@@ -44,7 +44,7 @@ class Forum(commands.Cog):
         # 1) Get forum channel
         forum = self.bot.get_channel(forum_id)
         if not isinstance(forum, discord.ForumChannel):
-            print(f"[Error] 頻道 ID {forum_id} 不是有效的 ForumChannel。")
+            logging.error(f"頻道 ID {forum_id} 不是論壇頻道 (ForumChannel)。")
             return None
         
         # 2) Fetch data
@@ -83,8 +83,9 @@ class Forum(commands.Cog):
             f"{'='*30}\n"
             f"📌 原文連結：{url}\n📅 發文時間：{discord_ts}"
         )
+
         if large_file_links:
-            new_content += "\n📂 附加檔案連結：\n" + "\n".join([f"- {l}" for l in large_file_links])
+            new_content += "\n📂 附加檔案連結：\n" + "\n".join([f"- {link}" for link in large_file_links])
 
         # 5) tags
         applied_tags = []
@@ -103,10 +104,10 @@ class Forum(commands.Cog):
                 reason="自動發文"
             )
 
-            print(f"已在 {forum.name} 建立新貼文: {result.thread.name} (ID: {result.thread.id})")
+            log.info(f"在 {forum.name} 發佈新貼文: {result.thread.name} (ID: {result.thread.id})")
             return result.thread.id 
         except Exception as e:
-            print(f"[Error] 在 {forum.name} 發佈貼文失敗: {e}")
+            log.error(f"在 {forum.name} 發佈貼文失敗: {e}")
             return None
     
     def is_owner():
@@ -158,48 +159,52 @@ class Forum(commands.Cog):
     #     await interaction.response.send_message(f"已新增頻道 {forum_channel.name} 至發佈清單。", ephemeral=True)
 
     @app_commands.command(name="add_forum", description="新增發佈新聞用的論壇頻道")
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True) # 建議改用管理員權限檢查
     async def add_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
-        # 1. 預先回應 (Defer)，解決「未知整合」與 3 秒超時問題
+        # 1. 第一時間告訴 Discord：我收到了，請等我處理 (解決 3 秒超時問題)
+        # ephemeral=True 表示只有執行者看得到「思考中」的訊息
         await interaction.response.defer(ephemeral=True)
 
         # 2. 檢查頻道型別
         if not isinstance(forum_channel, discord.ForumChannel):
             return await interaction.followup.send(f"頻道 {forum_channel.name} 不是論壇頻道。")
 
-        # 3. 使用非同步鎖定，確保資料庫寫入不衝突
-        async with self.bot.get_cog("Scheduler")._lock: # 建議與 Scheduler 共用同一個鎖
-            try:
-                # 腳踏實地的作法：使用 context manager (with) 管理連線
+        # 3. 執行資料庫操作 (現在你有 15 分鐘可以慢慢跑)
+        try:
+            # 獲取 Scheduler 的鎖，確保資料庫寫入不衝突
+            scheduler_cog = self.bot.get_cog("Scheduler")
+            async with scheduler_cog._lock:
                 with sqlite3.connect("data.db") as conn:
-                    conn.execute("PRAGMA journal_mode=WAL;") # 開啟 WAL 模式提升併發效能
+                    conn.execute("PRAGMA journal_mode=WAL;")
                     cursor = conn.cursor()
 
-                    # 檢查是否重複註冊
+                    # 檢查重複
                     cursor.execute("SELECT 1 FROM registered_forum WHERE channel_id = ?", (forum_channel.id,))
                     if cursor.fetchone():
                         return await interaction.followup.send(f"頻道 {forum_channel.name} 已在清單中。")
 
-                    # 執行寫入動作 (包裹在同一個 Transaction 中)
+                    # 插入頻道
                     cursor.execute("INSERT INTO registered_forum (channel_id) VALUES (?)", (forum_channel.id,))
                     
-                    # 同步現有貼文到任務表
+                    # 同步現有貼文 (這就是原本會超時的重活)
                     cursor.execute("""
                         INSERT OR IGNORE INTO repost (forum_channel_id, post_id)
                         SELECT ?, post_id FROM posted_news
                     """, (forum_channel.id,))
                     
                     conn.commit()
-                
-                # 4. 更新記憶體清單 (如果有維護的話)
-                if hasattr(self, "forum_channel_list"):
-                    self.forum_channel_list.append(forum_channel.id)
 
-                await interaction.followup.send(f"已新增頻道 {forum_channel.name} 至發佈清單。")
-                
-            except Exception as e:
-                print(f"[Error] add_forum 失敗: {e}")
-                await interaction.followup.send(f"執行過程發生錯誤：{e}")
+            # 4. 更新記憶體清單
+            if hasattr(self, "forum_channel_list"):
+                self.forum_channel_list.append(forum_channel.id)
+
+            # 5. 處理完成後，使用 followup 發送正式成功訊息
+            await interaction.followup.send(f"已成功新增頻道 **{forum_channel.name}** 並同步現有貼文任務。")
+
+        except Exception as e:
+            log.error(f"add_forum 失敗: {e}")
+            # 出錯也要告訴使用者
+            await interaction.followup.send(f"新增過程中發生錯誤: {e}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Forum(bot))

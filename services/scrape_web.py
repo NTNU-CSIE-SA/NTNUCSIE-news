@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import logging
 from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin
 import requests
@@ -30,34 +31,12 @@ SESSION.headers.update({
     "Connection": "keep-alive",
 })
 
+log = logging.getLogger(__name__)
+
 def ensure_parent_dir(path: str) -> None:
     parent = os.path.dirname(path)
     if parent:
         os.makedirs(parent, exist_ok=True)
-
-
-# def load_db(path: str) -> List[Dict[str, Any]]:
-#     if not os.path.exists(path):
-#         return []
-
-#     if os.path.getsize(path) == 0:
-#         print(f"WARN: {path} 是空檔案，將重新建立。")
-#         return []
-
-#     with open(path, "r", encoding="utf-8") as f:
-#         try:
-#             return json.load(f)
-#         except json.JSONDecodeError as exc:
-#             print(f"WARN: 讀取 {path} 失敗（{exc}），將重新建立。")
-#             return []
-
-
-# def save_db(path: str, data: List[Dict[str, Any]]) -> None:
-#     ensure_parent_dir(path)
-#     tmp = path + ".tmp"
-#     with open(tmp, "w", encoding="utf-8") as f:
-#         json.dump(data, f, ensure_ascii=False, indent=2)
-#     os.replace(tmp, path)
 
 def unique_keep_order(items: List[str]) -> List[str]:
     seen = set()
@@ -147,16 +126,17 @@ def main():
     for url in CATEGORY_URLS:
         cat_id = get_category_id_from_header(url)
         if cat_id is None:
-            print(f"[Skip] not a category page (cannot parse category id): {url}")
+            # print(f"[Skip] not a category page (cannot parse category id): {url}")
+            log.warning(f"Not a category page (cannot parse category id): {url}")
             continue
         name = get_category_name(cat_id, cat_name_cache)
-        print(f"[OK] {name} (id={cat_id}) <- {url}")
+        log.info(f"Found category: {name} (id={cat_id}) from {url}")
         cat_ids.append(cat_id)
 
     cat_ids = list(dict.fromkeys(cat_ids))
 
     if not cat_ids:
-        print("[WARN] 沒有任何有效分類（全部解析不到 category id）。")
+        log.warning("No categories found to fetch posts from.")
         return
 
     all_items_map: Dict[str, Dict[str, Any]] = {}
@@ -164,7 +144,7 @@ def main():
     for cat_id in cat_ids:
         cat_name = get_category_name(cat_id, cat_name_cache)
         posts = fetch_posts_by_category(cat_id)
-        print(f"Fetch {cat_name} (id={cat_id}) -> {len(posts)} posts")
+        log.info(f"Fetched {len(posts)} posts from category: {cat_name} (id={cat_id})")
 
         for p in posts:
             post_id = str(p.get("id"))
@@ -215,11 +195,15 @@ def main():
             }
 
     if not all_items_map:
-        print("[Warning] 有分類，但抓不到任何貼文。")
+        log.warning("No posts fetched from any category.")
         return
 
     return list(all_items_map.values())
 
 
 if __name__ == "__main__":
-    main()
+    all_item = main()
+    log.info(f"Total fetched items: {len(all_item)}")
+    for item in all_item[:3]:
+        print(json.dumps(item, ensure_ascii=False, indent=2))
+    

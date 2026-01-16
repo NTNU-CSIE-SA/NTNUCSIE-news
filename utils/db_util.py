@@ -30,8 +30,8 @@ def init_db():
     # 3) tags
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tags (
-            tag_id INTEGER PRIMARY KEY,
-            tag_name TEXT
+            tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tag_name TEXT UNIQUE NOT NULL
         )
     """)
     conn.commit()

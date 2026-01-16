@@ -8,13 +8,9 @@ import utils.db_util as db
 from discord.ext import commands
 from dotenv import load_dotenv
 from discord import app_commands
+from utils.log_util import setup_logging
 
-# logging settings
-handler = logging.FileHandler(filename='discord.log', encoding='utf-8', mode='w')
-handler.setFormatter(logging.Formatter('%(asctime)s:%(levelname)s:%(name)s: %(message)s'))
-logger = logging.getLogger('discord')
-logger.setLevel(logging.INFO)
-logger.addHandler(handler)
+log = logging.getLogger(__name__)
 
 async def main_loop():
     load_dotenv()
@@ -29,7 +25,7 @@ async def main_loop():
 
     @bot.event
     async def on_ready():
-        print(f'We have logged in as {bot.user}')
+        log.info(f'Bot logged in as {bot.user} (ID: {bot.user.id})')
         try:
             # 1) 同步到 Discord 全域指令，可能需要一段時間才會生效
             synced = await bot.tree.sync()
@@ -38,9 +34,9 @@ async def main_loop():
             # bot.tree.copy_global_to(guild=test_guild_obj)
             # synced = await bot.tree.sync(guild=test_guild_obj)
 
-            print(f'Synced {len(synced)} command(s)')
+            log.info(f'Synced {len(synced)} commands.')
         except Exception as e:
-            print(e)
+            log.error(f"Failed to sync commands: {e}")
 
 
     def slash_is_owner():
@@ -76,29 +72,34 @@ async def main_loop():
         if filename.endswith(".py"):
             try:
                 await bot.load_extension(f"cogs.{filename[:-3]}")
-                print(f"Loaded \033[1m{filename}\033[0m cog.")
+                log.info(f"Loaded cog: \033[1m{filename}\033[0m")
             except Exception as e:
-                print(f"Failed to load cog {filename}: {e}")
+                log.error(f"Failed to load cog \033[1m{filename}\033[0m: {e}")
 
     # Start bot
     while True:
         try:
             await bot.start(dc_token)
         except (discord.ConnectionClosed, discord.GatewayNotFound, discord.InvalidSession, discord.HTTPException) as e:
-            print(f"Connection error: {e}. Reconnecting in 5 seconds...")
+            log.error(f"Bot disconnected with error: {e}. Reconnecting in 5 seconds...")
             await asyncio.sleep(5)
         except KeyboardInterrupt:
             await bot.close()
             break
 
 def main():
+    os.makedirs("logs", exist_ok=True)
+    setup_logging()
+
     # Initialize database
+    log.info("Initializing database...")
     db.init_db()
-    
+    log.info("Database initialized.")
+
     try:
         asyncio.run(main_loop())
     except KeyboardInterrupt:
-        logging.info("Bot shutting down.")
+        log.info("Bot shutting down.")
 
 
 if __name__ == "__main__":
