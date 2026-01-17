@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import sys
 from logging.handlers import TimedRotatingFileHandler
-
 class ColorFormatter(logging.Formatter):
     COLORS = {
         logging.DEBUG: "\033[1;90m",     # 灰

@@ -2,8 +2,16 @@ services:
   bot:
     build: .
     container_name: ntnucsie-news-bot
-    restart: always # 確保程式崩潰或伺服器重啟時會自動恢復
-    env_file: .env # 自動載入您的 TOKEN 等設定
+    restart: always
+    env_file: .env
+    environment:
+      - TZ=Asia/Taipei
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
+
+networks:
+  bot_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1400

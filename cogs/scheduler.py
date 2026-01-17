@@ -56,6 +56,9 @@ class Scheduler(commands.Cog):
                     JOIN posted_news p ON r.post_id = p.post_id
                     LEFT JOIN forum_posted f ON r.forum_channel_id = f.forum_channel_id AND r.post_id = f.post_id
                     WHERE p.timestamp <= datetime('now')
+                    ORDER BY
+                        (f.dc_thread_id IS NOT NULL) ASC,
+                        p.timestamp ASC
                     LIMIT 50
                 """)
                 tasks_rows = cursor.fetchall()
