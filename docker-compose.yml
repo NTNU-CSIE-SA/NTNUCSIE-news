@@ -1,0 +1,17 @@
+services:
+  bot:
+    build: .
+    container_name: ntnucsie-news-bot
+    restart: always
+    env_file: .env
+    environment:
+      - TZ=Asia/Taipei
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+
+networks:
+  bot_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1400

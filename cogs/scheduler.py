@@ -1,96 +1,153 @@
-import json
 import asyncio
+import sqlite3
+import logging
+
+import services.news_processer as np
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Dict, Any
 from discord.ext import commands, tasks
-from cogs.forum import Forum
+from config.config import UPDATE_MINUTES, DB_PATH
+
+log = logging.getLogger(__name__)
 
 TAIPEI_TZ = ZoneInfo("Asia/Taipei")
-DATA_FILE = "data/post.json"
-CONFIG_FILE = "data/forum_config.json"
 
 class Scheduler(commands.Cog):
-    def __init__(self, bot: commands.Bot, forum_channel_ids: list[int] = None):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.forum_channel_list = forum_channel_ids or []
         self._lock = asyncio.Lock()
 
     async def cog_load(self):
-        if not self.scheduled_post.is_running():
-            self.scheduled_post.start()
+        self.scheduled_post.start()
 
     def cog_unload(self):
         self.scheduled_post.cancel()
 
-    @tasks.loop(minutes=1)
+    def _get_db(self):
+        conn = sqlite3.connect(DB_PATH, timeout=10) 
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA foreign_keys = ON;") # Foreign key support
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    @tasks.loop(minutes=UPDATE_MINUTES)
     async def scheduled_post(self):
         async with self._lock:
-            now = datetime.now(TAIPEI_TZ)
-            
-            # read posts from JSON file
-            try:
-                with open(DATA_FILE, "r", encoding="utf-8") as f:
-                    posts = json.load(f)
-            except FileNotFoundError:
-                print("[Error] 找不到 data/post.json 檔案。")
-                return
-            except json.JSONDecodeError:
-                print("[Error] data/post.json 檔案格式錯誤。")
-                return
-            
-            # load posts to list
-            posts_to_post = []
-            for post in posts:
-                post_time_str = post.get("timestamp")
-                if not post_time_str:
-                    continue
-                try:
-                    dt = datetime.fromisoformat(post_time_str.replace("Z", "+00:00"))
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=TAIPEI_TZ)
-                    post_time = dt.astimezone(TAIPEI_TZ)
-                except ValueError:
-                    print(f"[Error] 貼文時間格式錯誤: {post_time_str}")
-                    continue
-                if now >= post_time:
-                    posts_to_post.append(post)
+            # 1) Update news
+            log.info("Updating news database...")
+            await asyncio.to_thread(np.update_news)
+            log.info("News database updated.")
 
-            forum_cog: Forum = self.bot.get_cog("Forum")
-            if not forum_cog:
-                print("[Error] 找不到 Forum cog，無法發佈貼文。")
-                return
+            # 2) Get repost tasks
+            with self._get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        r.forum_channel_id, 
+                        r.post_id, 
+                        p.title, 
+                        p.url, 
+                        p.content, 
+                        p.timestamp, 
+                        f.dc_thread_id
+                    FROM repost r
+                    JOIN posted_news p ON r.post_id = p.post_id
+                    LEFT JOIN forum_posted f ON r.forum_channel_id = f.forum_channel_id AND r.post_id = f.post_id
+                    WHERE p.timestamp <= datetime('now')
+                    ORDER BY
+                        (f.dc_thread_id IS NOT NULL) ASC,
+                        p.timestamp ASC
+                    LIMIT 50
+                """)
+                tasks_rows = cursor.fetchall()
+                if not tasks_rows: 
+                    log.info("No pending repost tasks found.")
+                    return
 
-            # launch post tp forum
-            for post in posts_to_post:
-                title = post.get("title", "無標題")
-                content = post.get("content", "")
-                tags = post.get("tags", [])
-                posted_list = post.get("posted", [])
+                forum_cog = self.bot.get_cog("Forum")
+                log.info(f"Found {len(tasks_rows)} repost tasks to process.")
+                if not forum_cog: 
+                    return
 
-                try:
-                    posted_list = await forum_cog.post_forum(title, content, tags, posted_list)
-                    print(f"[Info] 已發佈貼文: {title}")
-                except Exception as e:
-                    print(f"[Error] 發佈貼文失敗: {title}, 錯誤: {e}")
-                    continue
+                # 3) Get additional post info
+                posts_info = self._get_posts_additional_info(cursor, {row['post_id'] for row in tasks_rows})
 
-                post["posted"] = posted_list
+                # 4) Process repost tasks
+                ok = 0
+                for row in tasks_rows:
+                    f_id = row['forum_channel_id']
+                    forum = self.bot.get_channel(f_id)
 
-            # Update the JSON file to mark posts as posted
-            try:
-                with open(DATA_FILE, "w", encoding="utf-8") as f:
-                    json.dump(posts, f, ensure_ascii=False, indent=4)
-            except Exception as e:
-                print(f"[Error] 無法儲存貼文資料: {e}")
-    
+                    if forum is None:
+                        log.warning(f"偵測到失效頻道 ID {f_id}，自動從資料庫移除。")
+                        cursor.execute("DELETE FROM registered_forum WHERE channel_id = ?", (f_id,))
+                        cursor.execute("DELETE FROM repost WHERE forum_channel_id = ?", (f_id,))
+                        cursor.execute("DELETE FROM forum_posted WHERE forum_channel_id = ?", (f_id,))
+                        conn.commit()
+                        continue
+
+                    p_id = row['post_id']
+                    info = posts_info.get(p_id, {})
+
+                    post_data = {
+                        "url": row['url'],
+                        "title": row['title'],
+                        "content": row['content'],
+                        "timestamp": datetime.fromisoformat(row['timestamp']).replace(tzinfo=TAIPEI_TZ) if row['timestamp'] else None,
+                        "tags": info.get("tags", []),
+                        "images_url": info.get("image_urls", []),
+                        "files_url": info.get("file_urls", [])
+                    }
+
+                    try:
+                        if row['dc_thread_id'] is None:
+                            # Create new post
+                            new_dc_id = await forum_cog.create_post(f_id, post_data)
+                            if new_dc_id:
+                                cursor.execute("INSERT OR REPLACE INTO forum_posted (forum_channel_id, post_id, dc_thread_id) VALUES (?, ?, ?)",
+                                               (f_id, p_id, str(new_dc_id)))
+                            else:
+                                log.warning(f"Failed to create post {p_id} in forum channel {f_id}. Skipping repost task.")
+                                continue
+                        else:
+                            # Update existing post
+                            dc_thread_id = int(row['dc_thread_id'])
+                            msg_id = await forum_cog.update_post(dc_thread_id, post_data)
+                            if msg_id is None:
+                                log.warning(f"Post {p_id} in forum channel {f_id} seems to be deleted. Removing repost task.")
+                                cursor.execute("DELETE FROM forum_posted WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
+                                cursor.execute("DELETE FROM repost WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
+                                conn.commit()
+                                continue
+
+                        # 成功後刪除任務並提交
+                        cursor.execute("DELETE FROM repost WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
+                        conn.commit()
+                        ok += 1
+
+
+                    except Exception as e:
+                        log.error(f"Failed to post to forum channel {f_id} for post {p_id}: {e}")
+                    
+                    # time limit
+                    await asyncio.sleep(10)
+                
+                log.info(f"Repost task processing completed: {ok}/{len(tasks_rows)} succeeded.")
+
+    def _get_posts_additional_info(self, cursor, post_ids: set) -> Dict[int, Any]:
+        info = {}
+        for p_id in post_ids:
+            tags = [r[0] for r in cursor.execute("SELECT t.tag_name FROM tags t JOIN post_tags pt ON t.tag_id = pt.tag_id WHERE pt.post_id = ?", (p_id,)).fetchall()]
+            imgs = [r[0] for r in cursor.execute("SELECT image_url FROM images WHERE post_id = ?", (p_id,)).fetchall()]
+            files = [r[0] for r in cursor.execute("SELECT file_url FROM files WHERE post_id = ?", (p_id,)).fetchall()]
+            info[p_id] = {"tags": tags, "image_urls": imgs, "file_urls": files}
+        return info
+
     @scheduled_post.before_loop
     async def _before(self):
         await self.bot.wait_until_ready()
 
 async def setup(bot: commands.Bot):
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        config = json.load(f)
-    forum_id = config.get("registered_forum", [])
-    
-    await bot.add_cog(Scheduler(bot, forum_id))
+    await bot.add_cog(Scheduler(bot))
