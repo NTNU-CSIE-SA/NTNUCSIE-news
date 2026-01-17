@@ -49,10 +49,3 @@ uv run bot.py
 Then you can use instruction `/add_forum <forum channel>` to add the forum which you want to launch posts to forum lists. The program will launch posts on it.
 
 If you want to untrack the forum, you can use `/remove_forum <forum channel>` to remove the forum.
-
-## Contributers
-Thanks for your contributions on the project.
-  
-<a href="https://github.com/NTNU-CSIE-SA/NTNUCSIE-news/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=NTNU-CSIE-SA/NTNUCSIE-news" />
-</a>
