@@ -9,11 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Dict, Any
 from discord.ext import commands, tasks
-from dotenv import load_dotenv
-
-# env
-load_dotenv()
-UPDATE_MINUTES = int(os.getenv("UPDATE_MINUTES", "30"))
+from config.config import UPDATE_MINUTES, DB_PATH
 
 log = logging.getLogger(__name__)
 
@@ -31,21 +27,21 @@ class Scheduler(commands.Cog):
         self.scheduled_post.cancel()
 
     def _get_db(self):
-        conn = sqlite3.connect("data.db", timeout=3)  # 3 秒拿不到鎖就噴錯，不要無限等
+        conn = sqlite3.connect(DB_PATH, timeout=10) 
         conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=3000;")     # 3 秒
+        conn.execute("PRAGMA foreign_keys = ON;") # Foreign key support
         conn.row_factory = sqlite3.Row
         return conn
 
     @tasks.loop(minutes=UPDATE_MINUTES)
     async def scheduled_post(self):
         async with self._lock:
-            # 1. 更新新聞
+            # 1) Update news
             log.info("Updating news database...")
             await asyncio.to_thread(np.update_news)
             log.info("News database updated.")
 
-            # 2. 獲取待處理任務
+            # 2) Get repost tasks
             with self._get_db() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -73,10 +69,10 @@ class Scheduler(commands.Cog):
                 if not forum_cog: 
                     return
 
-                # 3. 預載入所有貼文的附加資訊 (簡化查詢邏輯)
+                # 3) Get additional post info
                 posts_info = self._get_posts_additional_info(cursor, {row['post_id'] for row in tasks_rows})
 
-                # 4. 執行發佈
+                # 4) Process repost tasks
                 ok = 0
                 for row in tasks_rows:
                     f_id = row['forum_channel_id']

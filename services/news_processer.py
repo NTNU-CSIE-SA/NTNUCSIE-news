@@ -3,6 +3,8 @@ import sqlite3
 import hashlib
 import services.scrape_web as sw
 
+from config.config import DB_PATH
+
 log = logging.getLogger(__name__)
 
 def generate_hash(content: str) -> str:
@@ -87,7 +89,7 @@ def update_news():
         return
     
     # 2) Update to database
-    conn = sqlite3.connect("data.db")
+    conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA foreign_keys = ON;")
 

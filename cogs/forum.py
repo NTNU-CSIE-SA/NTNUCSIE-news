@@ -9,6 +9,7 @@ import logging
 
 from discord.ext import commands
 from discord import app_commands
+from config.config import DB_PATH
 
 log = logging.getLogger(__name__)
 class Forum(commands.Cog):
@@ -139,7 +140,7 @@ class Forum(commands.Cog):
             # 獲取 Scheduler 的鎖，確保資料庫寫入不衝突
             scheduler_cog = self.bot.get_cog("Scheduler")
             async with scheduler_cog._lock:
-                with sqlite3.connect("data.db") as conn:
+                with sqlite3.connect(DB_PATH) as conn:
                     conn.execute("PRAGMA journal_mode=WAL;")
                     cursor = conn.cursor()
 
@@ -184,7 +185,7 @@ class Forum(commands.Cog):
         try:
             scheduler_cog = self.bot.get_cog("Scheduler")
             async with scheduler_cog._lock:
-                with sqlite3.connect("data.db") as conn:
+                with sqlite3.connect(DB_PATH) as conn:
                     conn.execute("PRAGMA journal_mode=WAL;")
                     cursor = conn.cursor()
 
@@ -212,7 +213,7 @@ class Forum(commands.Cog):
         try:
             scheduler_cog = self.bot.get_cog("Scheduler")
             async with scheduler_cog._lock:
-                with sqlite3.connect("data.db") as conn:
+                with sqlite3.connect(DB_PATH) as conn:
                     conn.execute("PRAGMA journal_mode=WAL;")
                     cursor = conn.cursor()
 

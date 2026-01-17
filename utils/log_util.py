@@ -28,7 +28,7 @@ class ColorFormatter(logging.Formatter):
             # 還原，避免影響 file handler 或其他 formatter
             record.levelname = original_levelname
 
-def setup_logging():
+def setup_logging(console_level: int = logging.INFO) -> None:
     # 1) root logger = 你全專案共用的 logger
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
@@ -39,7 +39,7 @@ def setup_logging():
 
     # 2) console handler（直觀）
     console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.INFO)
+    console.setLevel(console_level)
     console.setFormatter(ColorFormatter(
         "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%H:%M:%S",

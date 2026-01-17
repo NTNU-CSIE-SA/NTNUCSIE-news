@@ -2,6 +2,7 @@ import os
 import logging
 import discord
 import asyncio
+import argparse
 
 import utils.db_util as db
 
@@ -11,6 +12,16 @@ from discord import app_commands
 from utils.log_util import setup_logging
 
 log = logging.getLogger(__name__)
+
+def setup_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="NTNU CSIE News Discord Bot")
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="INFO",
+        help="Set the logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)",
+    )
+    return parser
 
 async def main_loop():
     load_dotenv()
@@ -88,13 +99,17 @@ async def main_loop():
             break
 
 def main():
+    # parser
+    parser = setup_arg_parser()
+    args = parser.parse_args()
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    
+    # logging system
     os.makedirs("logs", exist_ok=True)
-    setup_logging()
+    setup_logging(log_level)
 
     # Initialize database
-    log.info("Initializing database...")
     db.init_db()
-    log.info("Database initialized.")
 
     try:
         asyncio.run(main_loop())
