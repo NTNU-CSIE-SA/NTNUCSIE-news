@@ -1,7 +1,6 @@
 import asyncio
 import sqlite3
 import logging
-import os
 
 import services.news_processer as np
 
@@ -101,14 +100,24 @@ class Scheduler(commands.Cog):
 
                     try:
                         if row['dc_thread_id'] is None:
-                            # 建立新貼文
+                            # Create new post
                             new_dc_id = await forum_cog.create_post(f_id, post_data)
                             if new_dc_id:
                                 cursor.execute("INSERT OR REPLACE INTO forum_posted (forum_channel_id, post_id, dc_thread_id) VALUES (?, ?, ?)",
                                                (f_id, p_id, str(new_dc_id)))
+                            else:
+                                log.warning(f"Failed to create post {p_id} in forum channel {f_id}. Skipping repost task.")
+                                continue
                         else:
-                            # TODO: Handle updates (update_post)
-                            pass
+                            # Update existing post
+                            dc_thread_id = int(row['dc_thread_id'])
+                            msg_id = await forum_cog.update_post(dc_thread_id, post_data)
+                            if msg_id is None:
+                                log.warning(f"Post {p_id} in forum channel {f_id} seems to be deleted. Removing repost task.")
+                                cursor.execute("DELETE FROM forum_posted WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
+                                cursor.execute("DELETE FROM repost WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
+                                conn.commit()
+                                continue
 
                         # 成功後刪除任務並提交
                         cursor.execute("DELETE FROM repost WHERE forum_channel_id = ? AND post_id = ?", (f_id, p_id))
@@ -125,7 +134,6 @@ class Scheduler(commands.Cog):
                 log.info(f"Repost task processing completed: {ok}/{len(tasks_rows)} succeeded.")
 
     def _get_posts_additional_info(self, cursor, post_ids: set) -> Dict[int, Any]:
-        """封裝輔助查詢，讓主邏輯更乾淨"""
         info = {}
         for p_id in post_ids:
             tags = [r[0] for r in cursor.execute("SELECT t.tag_name FROM tags t JOIN post_tags pt ON t.tag_id = pt.tag_id WHERE pt.post_id = ?", (p_id,)).fetchall()]

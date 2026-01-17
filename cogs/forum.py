@@ -18,7 +18,6 @@ class Forum(commands.Cog):
         self.db_lock = asyncio.Lock()
     
     async def _smart_download(self, session, url, max_mb):
-        """智慧下載：檢查大小，太大的回傳 URL 字串，小的回傳 discord.File"""
         try:
             async with session.head(url, timeout=5, allow_redirects=True) as resp:
                 size_bytes = int(resp.headers.get('Content-Length', 0))
@@ -72,7 +71,7 @@ class Forum(commands.Cog):
                     large_file_links.append(file_obj)
         
         # 4) New Content
-        # Discord Timestamp: <t:秒數:F>
+        ## Timestamp <t:TIMESTAMP:F>
         discord_ts = ""
         if hasattr(timestamp_obj, 'timestamp'):
             discord_ts = f"<t:{int(timestamp_obj.timestamp())}:F>"
@@ -113,46 +112,128 @@ class Forum(commands.Cog):
             )
 
             log.info(f"在 {forum.name} 發佈新貼文: {result.thread.name} (ID: {result.thread.id})")
+
+            for f in upload_files:
+                f.close()
+            
             return result.thread.id 
         except Exception as e:
             log.error(f"在 {forum.name} 發佈貼文失敗: {e}")
             return None
     
-    # TODO: Update post method
+    async def update_post(
+        self,
+        dc_thread_id: int,
+        post: dict,
+        max_upload_size_mb: int = 24,
+    ):
+        # 1) Get threads id
+        thread = self.bot.get_channel(dc_thread_id)
+        if not isinstance(thread, discord.Thread):
+            logging.error(f"頻道 ID {dc_thread_id} 不是討論串 (Thread)。")
+            return
+        
+        # 2) Fetch data
+        url = post.get("url", "")
+        content = post.get("content", "")
+        timestamp_obj = post.get("timestamp")
+        image_urls = post.get("images_url", [])
+        file_urls = post.get("files_url", [])
+
+        # 3) Download files and images
+        upload_files = []
+        large_file_links = []
+        async with aiohttp.ClientSession() as session:
+            for u in (image_urls[:10] + file_urls):
+                file_obj = await self._smart_download(session, u, max_upload_size_mb)
+                if isinstance(file_obj, discord.File):
+                    if len(upload_files) < 10:
+                        upload_files.append(file_obj)
+                    else:
+                        large_file_links.append(u)
+                elif isinstance(file_obj, str):
+                    large_file_links.append(file_obj)
+
+        # 4) New Content
+        ## Timestamp <t:TIMESTAMP:F>
+        discord_ts = ""
+        if hasattr(timestamp_obj, 'timestamp'):
+            discord_ts = f"<t:{int(timestamp_obj.timestamp())}:F>"
+        else:
+            discord_ts = str(timestamp_obj)
+
+        new_content = (
+            f"📢 **【新聞內容更新通知】**\n"
+            f"{content[:1800]}\n\n"
+            f"{'='*30}\n"
+            f"📌 原文連結：{url}\n📅 發文時間：{discord_ts}"
+        )
+
+        if len(new_content) > 2000:
+                new_content = new_content[:1990] + "..."
+
+
+        if large_file_links:
+            new_content += "\n📂 附加檔案連結：\n" + "\n".join([f"- {link}" for link in large_file_links])
+
+        # 5) Send update message
+        try:
+            sent_message = await thread.send(
+                content=new_content,
+                files=upload_files
+            )
+
+            log.info(f"在 {thread.name} 更新貼文，訊息 ID: {sent_message.id}")
+
+            for f in upload_files:
+                f.close()
+            
+            return sent_message.id
+        except discord.Forbidden:
+            logging.error(f"權限不足：無法在討論串 {dc_thread_id} 發送更新。")
+        except discord.HTTPException as e:
+            logging.error(f"發送更新訊息失敗 (HTTP {e.status}): {e}")
+        except Exception as e:
+            logging.error(f"更新討論串時發生未知錯誤: {e}")
+        finally:
+            for f in upload_files:
+                f.close()
+        
+        return None
+            
+
     def is_owner():
         async def predicate(inter: discord.Interaction):
             return await inter.client.is_owner(inter.user)
         return app_commands.check(predicate)
 
     @app_commands.command(name="add_forum", description="新增發佈新聞用的論壇頻道")
-    @app_commands.checks.has_permissions(administrator=True) # 建議改用管理員權限檢查
+    @app_commands.checks.has_permissions(administrator=True)
     async def add_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
-        # 1. 第一時間告訴 Discord：我收到了，請等我處理 (解決 3 秒超時問題)
-        # ephemeral=True 表示只有執行者看得到「思考中」的訊息
+        # 1) Delay response
         await interaction.response.defer(ephemeral=True)
 
-        # 2. 檢查頻道型別
+        # 2) Check channel type
         if not isinstance(forum_channel, discord.ForumChannel):
             return await interaction.followup.send(f"頻道 {forum_channel.name} 不是論壇頻道。")
 
-        # 3. 執行資料庫操作 (現在你有 15 分鐘可以慢慢跑)
+        # 3) Database operations
         try:
-            # 獲取 Scheduler 的鎖，確保資料庫寫入不衝突
+            ## Get scheduler cog's lock
             scheduler_cog = self.bot.get_cog("Scheduler")
             async with scheduler_cog._lock:
                 with sqlite3.connect(DB_PATH) as conn:
                     conn.execute("PRAGMA journal_mode=WAL;")
                     cursor = conn.cursor()
 
-                    # 檢查重複
+                    ## Check if already registered
                     cursor.execute("SELECT 1 FROM registered_forum WHERE channel_id = ?", (forum_channel.id,))
                     if cursor.fetchone():
                         return await interaction.followup.send(f"頻道 {forum_channel.name} 已在清單中。")
 
-                    # 插入頻道
                     cursor.execute("INSERT INTO registered_forum (channel_id) VALUES (?)", (forum_channel.id,))
                     
-                    # 同步現有貼文
+                    ## Sync existing posts
                     cursor.execute("""
                         INSERT OR IGNORE INTO repost (forum_channel_id, post_id)
                         SELECT ?, post_id FROM posted_news
@@ -164,21 +245,20 @@ class Forum(commands.Cog):
                     
                     conn.commit()
 
-            # 4. 更新記憶體清單
+            # 4) Update in-memory list
             if hasattr(self, "forum_channel_list"):
                 self.forum_channel_list.append(forum_channel.id)
 
-            # 5. 處理完成後，使用 followup 發送正式成功訊息
+            # 5) Notify success
             log.info(f"新增論壇頻道 {forum_channel.name} (ID: {forum_channel.id}) 並同步現有貼文任務。")
             await interaction.followup.send(f"已成功新增頻道 **{forum_channel.name}** 並同步現有貼文任務。")
 
         except Exception as e:
             log.error(f"add_forum 失敗: {e}")
-            # 出錯也要告訴使用者
             await interaction.followup.send(f"新增過程中發生錯誤: {e}")
 
     @app_commands.command(name="remove_forum", description="移除發佈新聞用的論壇頻道")
-    @app_commands.checks.has_permissions(administrator=True) # 建議改用管理員權限檢查
+    @app_commands.checks.has_permissions(administrator=True)
     async def remove_forum(self, interaction: discord.Interaction, forum_channel: discord.ForumChannel):
         await interaction.response.defer(ephemeral=True)
 

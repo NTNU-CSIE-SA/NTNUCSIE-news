@@ -82,13 +82,25 @@ def insert_data(conn, item):
         SELECT channel_id, ? FROM registered_forum
     """, (post_id,))
 
+def preprocess_content(item):
+    title = item.get("title", "").strip()
+    content = item.get("content", "").strip()
+
+    ## remove title from content if present
+    if content.startswith(title):
+        content = content[len(title):].strip()
+    
+    item["title"] = title
+    item["content"] = content
+    return item
+
 def update_news():
     # 1) Scrape all news
     all_items = sw.main()
     if not all_items: 
         return
     
-    # 2) Update to database
+    # 2) Connect to DB
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -99,9 +111,10 @@ def update_news():
         with conn:
             ok = 0
             for item in all_items:
+                ## 3) Preprocess content
+                item = preprocess_content(item)
                 ## TODO: Use LLMs to rewrite content or summarize content
-
-                ## 3) Insert or update data
+                ## 4) Insert or update data
                 if isinstance(item, dict):
                     insert_data(conn, item)
                     ok += 1

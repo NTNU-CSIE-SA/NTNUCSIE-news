@@ -2,7 +2,6 @@ import json
 import os
 import re
 import logging
-import requests
 
 from typing import List, Dict, Any, Optional
 from urllib.parse import urljoin
