@@ -24,21 +24,20 @@ To run the program successfully, please check the following:
 Please set a `.env` file for the repo, you can run following instruction and fill information in terminal to set `.env`
 
 ```sh
-echo 'DISCORD_TOKEN=<your_discord_bot_token>
-TEST_GUILD_ID=<test_guild_id>' > .env
+echo 'DISCORD_TOKEN=<your_discord_bot_token>' > .env
 ```
 
 Build and start the containers:
 ```sh
-docker-compose up -d --build
+docker-compose up -d --build # For python version < 3.12
+docker compose up -d --build # For python version >= 3.12
 ```
 
 ## 💻 Local Development (without Docker)
 Please set a `.env` file for the repo, you can run following instruction and fill information in terminal to set `.env`
 
 ```sh
-echo 'DISCORD_TOKEN=<your_discord_bot_token>
-TEST_GUILD_ID=<test_guild_id>' > .env
+echo 'DISCORD_TOKEN=<your_discord_bot_token>' > .env
 ```
 
 Use **uv** to install dependencies the backend app need:
