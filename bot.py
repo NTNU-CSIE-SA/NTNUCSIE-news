@@ -27,8 +27,8 @@ async def main_loop():
     load_dotenv()
 
     dc_token = os.getenv("DISCORD_TOKEN")
-    test_guild_id = int(os.getenv("TEST_GUILD_ID"))
-    test_guild_obj = discord.Object(id=test_guild_id)
+    # test_guild_id = int(os.getenv("TEST_GUILD_ID"))
+    # test_guild_obj = discord.Object(id=test_guild_id)
 
     # bot settings
     intents = discord.Intents.all()
@@ -59,21 +59,21 @@ async def main_loop():
     @slash_is_owner()
     async def load(interaction: discord.Interaction, cog: str):
         await bot.load_extension(f"cogs.{cog}")
-        await bot.tree.sync(guild=test_guild_obj)
+        # await bot.tree.sync(guild=test_guild_obj)
         await interaction.response.send_message(f"[Info] 成功載入 \033[1m{cog}\033[0m")
 
     @bot.tree.command(name="unload", description="[管理員] 卸載特定功能模組")
     @slash_is_owner()
     async def unload(interaction: discord.Interaction, cog: str):
         await bot.unload_extension(f"cogs.{cog}")
-        await bot.tree.sync(guild=test_guild_obj)
+        # await bot.tree.sync(guild=test_guild_obj)
         await interaction.response.send_message(f"[Info] 成功卸載 \033[1m{cog}\033[0m")
 
     @bot.tree.command(name="reload", description="[管理員] 重新載入特定功能模組")
     @slash_is_owner()
     async def reload(interaction: discord.Interaction, cog: str):
         await bot.reload_extension(f"cogs.{cog}")
-        await bot.tree.sync(guild=test_guild_obj)
+        # await bot.tree.sync(guild=test_guild_obj)
         await interaction.response.send_message(f"[Info] 成功重新載入 \033[1m{cog}\033[0m")
 
     # Load cogs
